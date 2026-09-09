@@ -38,7 +38,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
    - creates your user (sudo without password, member of `docker`),
    - installs your host's SSH public keys,
    - sets the timezone (`Europe/Madrid` by default),
-   - upgrades packages and installs `qemu-guest-agent`, `git`, `htop`, `vim`,
+   - upgrades packages and installs `qemu-guest-agent`, `git`, `htop`, `vim`
+     and `tmux` (with lingering enabled, so detached sessions survive after
+     the last SSH connection closes),
    - enables compressed swap in RAM (zram, zstd, 50% of RAM) so memory
      pressure degrades performance instead of OOM-killing containers,
    - enables automatic security updates (`unattended-upgrades`),

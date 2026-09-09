@@ -309,6 +309,7 @@ packages:
   - git
   - htop
   - vim
+  - tmux
   - zram-tools
   - unattended-upgrades
 
@@ -350,6 +351,9 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ddev
   - usermod -aG docker $CI_USER
+  # Keep the user's background processes (e.g. tmux sessions) alive after the
+  # last SSH session closes, regardless of logind's KillUserProcesses setting.
+  - loginctl enable-linger $CI_USER
   # Make DDEV sites reachable from other machines on the network (this is a VM, not localhost)
   - su - $CI_USER -c "ddev config global --router-bind-all-interfaces"
   - touch /var/lib/cloud/instance/ddev-provisioned
