@@ -52,8 +52,8 @@ Usage: ddev.sh [options]
 
 The default installation only asks for the VM name and the IP; everything
 else uses defaults. Use --advanced to review every setting. Environment
-variables work too: VMID, VM_NAME, CORES, RAM, DISK_SIZE, STORAGE, BRIDGE,
-IP_ADDR, GATEWAY, ONBOOT, CI_USER, CI_PASSWORD, ADVANCED.
+variables work too: VMID, VM_NAME, CORES, RAM, BALLOON, DISK_SIZE, STORAGE,
+BRIDGE, IP_ADDR, GATEWAY, ONBOOT, CI_USER, CI_PASSWORD, ADVANCED.
 
 When piping through bash -c, pass flags after '--':
   bash -c "$(curl -fsSL .../vm/ddev.sh)" -- --name ddev-myproject --ip 192.168.1.50/24
@@ -108,15 +108,17 @@ DEFAULT_VMID=$(pvesh get /cluster/nextid)
 DEFAULT_STORAGE=$(pvesm status --content images | awk 'NR>1 && $3=="active" {print $1; exit}')
 
 # CPU is time-shared by KVM, so giving the VM every host core is safe and lets
-# DDEV use whatever is idle. RAM is committed, so default to 8 GiB per VM
-# (several project VMs can coexist on the host), capped to what the host can
-# spare (total minus 10%, keeping at least 2 GiB for Proxmox itself).
+# DDEV use whatever is idle. RAM is an elastic ceiling thanks to ballooning
+# (16 GiB max / 1 GiB guaranteed by default): pages are only taken as the VM
+# touches them, and under host memory pressure Proxmox reclaims down to the
+# balloon minimum. The default is still capped to what the host can spare
+# (total minus 10%, keeping at least 2 GiB for Proxmox itself).
 HOST_CORES=$(nproc)
 HOST_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
 RAM_RESERVE=$((HOST_RAM_MB / 10))
 ((RAM_RESERVE < 2048)) && RAM_RESERVE=2048
 RAM_AVAIL=$((HOST_RAM_MB - RAM_RESERVE))
-DEFAULT_RAM=8192
+DEFAULT_RAM=16384
 ((DEFAULT_RAM > RAM_AVAIL)) && DEFAULT_RAM=$RAM_AVAIL
 
 # Installation type: default only asks VM name and IP; advanced asks everything.
@@ -197,6 +199,7 @@ fi
 if [[ $ADVANCED -eq 1 ]]; then
   ask VMID "VM ID" "$DEFAULT_VMID"
   ask CORES "CPU cores" "$HOST_CORES"
+  ask BALLOON "Minimum guaranteed RAM with ballooning (MiB)" "1024"
   ask STORAGE "Storage for the VM disk" "$DEFAULT_STORAGE"
   ask BRIDGE "Network bridge" "vmbr1"
   ask ONBOOT "Start VM on host boot (0/1)" "1"
@@ -205,12 +208,16 @@ if [[ $ADVANCED -eq 1 ]]; then
 else
   VMID=${VMID:-$DEFAULT_VMID}
   CORES=${CORES:-$HOST_CORES}
+  BALLOON=${BALLOON:-1024}
   STORAGE=${STORAGE:-$DEFAULT_STORAGE}
   BRIDGE=${BRIDGE:-vmbr1}
   ONBOOT=${ONBOOT:-1}
   CI_USER=${CI_USER:-ddev}
   CI_PASSWORD=${CI_PASSWORD:-ddev}
 fi
+
+# The balloon minimum can never exceed the assigned RAM.
+((BALLOON > RAM)) && BALLOON=$RAM
 
 if qm status "$VMID" >/dev/null 2>&1; then
   msg_error "VMID $VMID is already in use."
@@ -322,6 +329,7 @@ qm create "$VMID" \
   --ostype l26 \
   --cores "$CORES" \
   --memory "$RAM" \
+  --balloon "$BALLOON" \
   --cpu host \
   --net0 "virtio,bridge=$BRIDGE" \
   --scsihw virtio-scsi-single \

@@ -24,7 +24,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
 1. Asks for the installation type:
    - **Default** (recommended): asks for the VM name (`ddev-xxx`, where you
      replace `xxx` with your project name), the static IP (`10.42.0.2xx/24`
-     placeholder, or `dhcp`), the RAM (default 8 GiB) and the disk size
+     placeholder, or `dhcp`), the RAM (default 16 GiB) and the disk size
      (default 20 GiB). Everything else uses the defaults from the table below.
    - **Advanced**: additionally asks for VM ID, CPU, storage, bridge,
      gateway, autostart, username and password.
@@ -79,7 +79,8 @@ using defaults.
 | `VMID` | next free ID | Proxmox VM ID |
 | `VM_NAME` | `ddev` | VM name and hostname |
 | `CORES` | all host cores | CPU cores (KVM time-shares CPU, so this is safe) |
-| `RAM` | `8192` | RAM in MiB, capped to host RAM minus a reserve (10%, min 2 GiB) |
+| `RAM` | `16384` | Maximum RAM in MiB, capped to host RAM minus a reserve (10%, min 2 GiB) |
+| `BALLOON` | `1024` | Minimum guaranteed RAM in MiB (ballooning; see below) |
 | `DISK_SIZE` | `20` | Disk size in GiB |
 | `STORAGE` | first active image storage | Storage for the VM disk |
 | `BRIDGE` | `vmbr1` | Network bridge |
@@ -96,6 +97,25 @@ VMID=200 VM_NAME=ddev-client1 DISK_SIZE=80 CI_PASSWORD='s3cret' \
   IP_ADDR=192.168.1.50/24 GATEWAY=192.168.1.1 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts/main/vm/ddev.sh)"
 ```
+
+## Memory behavior (ballooning)
+
+The VM is created with `memory=16384` and `balloon=1024` (defaults): it can
+use up to 16 GiB, with 1 GiB guaranteed. QEMU does not pre-reserve the full
+16 GiB — host pages are allocated as the guest touches them. Without
+ballooning they would never be returned; with it, when the **host** memory
+usage goes above ~80%, Proxmox automatically reclaims memory from VMs (down
+to their `balloon` minimum, proportionally — not all VMs drop to the minimum
+at once) and redistributes it. While the host has plenty of free RAM, VMs
+keep whatever they have touched. CPU needs no such mechanism: idle vCPUs cost
+nothing, cores are time-shared.
+
+The ceiling is elastic but not free: several VMs *actively* using lots of
+memory at the same time can still exhaust the host — ballooning cannot
+reclaim memory that is genuinely in use. If containers inside a VM get
+OOM-killed under host pressure, raise its floor: `qm set <vmid> --balloon 2048`.
+Set `BALLOON` equal to `RAM` to disable ballooning (fixed allocation), e.g.
+for databases that react badly to memory being reclaimed.
 
 ## After installation
 
