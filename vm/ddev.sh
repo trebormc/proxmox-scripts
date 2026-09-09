@@ -90,9 +90,27 @@ fi
 # Snippets-capable storage is required for the cloud-init user-data file.
 SNIP_STORAGE=$(pvesm status --content snippets 2>/dev/null | awk 'NR>1 && $3=="active" {print $1; exit}' || true)
 if [[ -z $SNIP_STORAGE ]]; then
-  msg_error "No active storage with 'Snippets' content found."
-  msg_error "Enable it on 'local': Datacenter -> Storage -> local -> Edit -> Content -> add 'Snippets'."
-  exit 1
+  msg_warn "No active storage with 'Snippets' content found (needed for the cloud-init user-data)."
+  # Offer to enable it on 'local', preserving its current content types
+  # (--content replaces the list, so we must append, not overwrite).
+  LOCAL_CONTENT=$(pvesh get /storage/local --output-format json 2>/dev/null | grep -oP '"content"\s*:\s*"\K[^"]+' || true)
+  if [[ -n $LOCAL_CONTENT && $LOCAL_CONTENT != *snippets* && -t 0 ]]; then
+    read -rp "Enable 'Snippets' on storage 'local' now? [Y/n]: " ENABLE_SNIPPETS
+    if [[ ${ENABLE_SNIPPETS,,} != n* ]]; then
+      pvesm set local --content "${LOCAL_CONTENT},snippets"
+      SNIP_STORAGE=local
+      msg_ok "'Snippets' content enabled on storage 'local'."
+    fi
+  fi
+  if [[ -z $SNIP_STORAGE ]]; then
+    msg_error "Cannot continue without a snippets-capable storage."
+    if [[ -n $LOCAL_CONTENT ]]; then
+      msg_error "Fix it with: pvesm set local --content ${LOCAL_CONTENT},snippets"
+    else
+      msg_error "Enable it in the UI: Datacenter -> Storage -> local -> Edit -> Content -> add 'Snippets'."
+    fi
+    exit 1
+  fi
 fi
 SNIP_PATH=$(pvesh get "/storage/$SNIP_STORAGE" --output-format json 2>/dev/null | grep -oP '"path"\s*:\s*"\K[^"]+' || true)
 if [[ -z $SNIP_PATH ]]; then

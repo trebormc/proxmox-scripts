@@ -14,7 +14,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
 - Proxmox VE 7.2 or newer (uses `import-from` for disk import).
 - Run as **root** on the PVE host shell.
 - A storage with **Snippets** content enabled (usually `local`). The script
-  needs it to store the cloud-init user-data file. If missing, enable it in
+  needs it to store the cloud-init user-data file. If missing, the script
+  offers to enable it on `local` for you; you can also do it manually in
   *Datacenter → Storage → local → Edit → Content → Snippets*.
 - Internet access from the host (downloads the Debian cloud image) and from the
   VM (installs packages on first boot).
