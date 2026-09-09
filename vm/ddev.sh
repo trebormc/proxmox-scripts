@@ -4,10 +4,14 @@
 # Run on a Proxmox VE host, as root:
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts/main/vm/ddev.sh)"
 #
-# Every setting can be overridden with environment variables (skips the prompt):
+# Settings can be passed as flags (skips the prompt):
+#   bash -c "$(curl -fsSL ...)" -- --name ddev-myproject --ip 192.168.1.50/24
+#
+# ...or as environment variables:
 #   VMID=200 DISK_SIZE=80 bash -c "$(curl -fsSL ...)"
 #
-# See docs/ddev.md for the full list of variables and details.
+# Anything not provided is asked interactively, with sensible defaults.
+# See docs/ddev.md for the full list of options and details.
 
 set -Eeuo pipefail
 
@@ -32,6 +36,46 @@ ask() {
   fi
   printf -v "$__var" '%s' "${__value:-$__default}"
 }
+
+# --- flags ------------------------------------------------------------------
+usage() {
+  cat <<'USAGE'
+Usage: ddev.sh [options]
+
+  --name <name>       VM name/hostname (e.g. ddev-myproject)
+  --ip <cidr|dhcp>    Static IP in CIDR notation (e.g. 10.42.0.201/24) or 'dhcp'
+  --gateway <ip>      Gateway for static IP (default: .1 of the network)
+  --bridge <bridge>   Network bridge (default: vmbr1)
+  --vmid <id>         Proxmox VM ID (default: next free)
+  --advanced          Ask for every setting instead of using defaults
+  -h, --help          Show this help
+
+The default installation only asks for the VM name and the IP; everything
+else uses defaults. Use --advanced to review every setting. Environment
+variables work too: VMID, VM_NAME, CORES, RAM, DISK_SIZE, STORAGE, BRIDGE,
+IP_ADDR, GATEWAY, ONBOOT, CI_USER, CI_PASSWORD, ADVANCED.
+
+When piping through bash -c, pass flags after '--':
+  bash -c "$(curl -fsSL .../vm/ddev.sh)" -- --name ddev-myproject --ip 192.168.1.50/24
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --name) VM_NAME=${2:?--name needs a value}; shift 2 ;;
+    --ip) IP_ADDR=${2:?--ip needs a value}; shift 2 ;;
+    --gateway) GATEWAY=${2:?--gateway needs a value}; shift 2 ;;
+    --bridge) BRIDGE=${2:?--bridge needs a value}; shift 2 ;;
+    --vmid) VMID=${2:?--vmid needs a value}; shift 2 ;;
+    --advanced) ADVANCED=1; shift ;;
+    -h | --help) usage; exit 0 ;;
+    *)
+      msg_error "Unknown option: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
 
 # --- sanity checks ----------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then
@@ -63,16 +107,110 @@ echo -e "\n${GN}DDEV VM for Proxmox VE${CL} — Debian 13 + Docker + DDEV\n"
 DEFAULT_VMID=$(pvesh get /cluster/nextid)
 DEFAULT_STORAGE=$(pvesm status --content images | awk 'NR>1 && $3=="active" {print $1; exit}')
 
-ask VMID "VM ID" "$DEFAULT_VMID"
-ask VM_NAME "VM name" "ddev"
-ask CORES "CPU cores" "4"
-ask RAM "RAM (MiB)" "8192"
-ask DISK_SIZE "Disk size (GiB)" "60"
-ask STORAGE "Storage for the VM disk" "$DEFAULT_STORAGE"
-ask BRIDGE "Network bridge" "vmbr0"
-ask ONBOOT "Start VM on host boot (0/1)" "1"
-ask CI_USER "VM username" "ddev"
-ask CI_PASSWORD "VM user password (console/SSH)" "ddev"
+# CPU is time-shared by KVM, so giving the VM every host core is safe and lets
+# DDEV use whatever is idle. RAM is committed, so default to 8 GiB per VM
+# (several project VMs can coexist on the host), capped to what the host can
+# spare (total minus 10%, keeping at least 2 GiB for Proxmox itself).
+HOST_CORES=$(nproc)
+HOST_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+RAM_RESERVE=$((HOST_RAM_MB / 10))
+((RAM_RESERVE < 2048)) && RAM_RESERVE=2048
+RAM_AVAIL=$((HOST_RAM_MB - RAM_RESERVE))
+DEFAULT_RAM=8192
+((DEFAULT_RAM > RAM_AVAIL)) && DEFAULT_RAM=$RAM_AVAIL
+
+# Installation type: default only asks VM name and IP; advanced asks everything.
+# With name and IP already given (flags/env), run fully unattended: no
+# installation-type question and no final confirmation.
+PRESET=0
+[[ -n ${VM_NAME:-} && -n ${IP_ADDR:-} ]] && PRESET=1
+
+if [[ -z ${ADVANCED:-} ]]; then
+  ADVANCED=0
+  if [[ -t 0 && $PRESET -eq 0 ]]; then
+    read -rp "Installation type — [d]efault (recommended) / [a]dvanced [d]: " INSTALL_MODE
+    [[ ${INSTALL_MODE,,} == a* ]] && ADVANCED=1
+  fi
+fi
+
+# VM name: 'ddev-xxx' is a placeholder — the user must replace 'xxx' with the
+# real project name. Re-ask until they do (interactive mode only).
+while [[ -z ${VM_NAME:-} || $VM_NAME == ddev-xxx ]]; do
+  if [[ ${VM_NAME:-} == ddev-xxx ]]; then
+    msg_warn "'ddev-xxx' is a placeholder — replace 'xxx' with your project name."
+    VM_NAME=""
+  fi
+  if [[ -t 0 ]]; then
+    read -rp "VM name (e.g. ddev-myproject) [ddev-xxx]: " VM_NAME
+    VM_NAME=${VM_NAME:-ddev-xxx}
+  else
+    VM_NAME="ddev"
+  fi
+done
+if [[ ! $VM_NAME =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$ ]]; then
+  msg_error "Invalid VM name '$VM_NAME' — use letters, digits and hyphens (it becomes the hostname)."
+  exit 1
+fi
+
+# Static IP: '10.42.0.2xx/24' is a placeholder — replace 'xx' with the real
+# host number. 'dhcp' is also accepted. Re-ask until valid (interactive only).
+while :; do
+  if [[ -z ${IP_ADDR:-} && -t 0 ]]; then
+    read -rp "Static IP with CIDR, or 'dhcp' [10.42.0.2xx/24]: " IP_ADDR
+    IP_ADDR=${IP_ADDR:-10.42.0.2xx/24}
+  fi
+  IP_ADDR=${IP_ADDR:-dhcp}
+  if [[ ${IP_ADDR,,} == dhcp ]]; then
+    IPCONFIG="ip=dhcp"
+    break
+  elif [[ $IP_ADDR == *xx* ]]; then
+    msg_warn "'10.42.0.2xx/24' is a placeholder — replace 'xx' with the real host number (e.g. 10.42.0.201/24)."
+  elif [[ $IP_ADDR =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+    IP_BASE=${IP_ADDR%/*}
+    if [[ $ADVANCED -eq 1 ]]; then
+      ask GATEWAY "Gateway" "${IP_BASE%.*}.1"
+    else
+      GATEWAY=${GATEWAY:-${IP_BASE%.*}.1}
+    fi
+    IPCONFIG="ip=$IP_ADDR,gw=$GATEWAY"
+    break
+  else
+    msg_warn "Invalid IP '$IP_ADDR' — expected CIDR notation like 10.42.0.201/24, or 'dhcp'."
+  fi
+  if [[ ! -t 0 ]]; then
+    msg_error "Invalid IP_ADDR value in non-interactive mode."
+    exit 1
+  fi
+  IP_ADDR=""
+done
+
+# RAM and disk are asked in both installation types (but not when running
+# unattended with name and IP preset).
+if [[ $PRESET -eq 1 && $ADVANCED -eq 0 ]]; then
+  RAM=${RAM:-$DEFAULT_RAM}
+  DISK_SIZE=${DISK_SIZE:-20}
+else
+  ask RAM "RAM (MiB)" "$DEFAULT_RAM"
+  ask DISK_SIZE "Disk size (GiB)" "20"
+fi
+
+if [[ $ADVANCED -eq 1 ]]; then
+  ask VMID "VM ID" "$DEFAULT_VMID"
+  ask CORES "CPU cores" "$HOST_CORES"
+  ask STORAGE "Storage for the VM disk" "$DEFAULT_STORAGE"
+  ask BRIDGE "Network bridge" "vmbr1"
+  ask ONBOOT "Start VM on host boot (0/1)" "1"
+  ask CI_USER "VM username" "ddev"
+  ask CI_PASSWORD "VM user password (console/SSH)" "ddev"
+else
+  VMID=${VMID:-$DEFAULT_VMID}
+  CORES=${CORES:-$HOST_CORES}
+  STORAGE=${STORAGE:-$DEFAULT_STORAGE}
+  BRIDGE=${BRIDGE:-vmbr1}
+  ONBOOT=${ONBOOT:-1}
+  CI_USER=${CI_USER:-ddev}
+  CI_PASSWORD=${CI_PASSWORD:-ddev}
+fi
 
 if qm status "$VMID" >/dev/null 2>&1; then
   msg_error "VMID $VMID is already in use."
@@ -95,8 +233,8 @@ fi
 
 echo
 # shellcheck disable=SC2153 # variables are assigned indirectly by ask() via printf -v
-msg_info "Summary: VMID=$VMID name=$VM_NAME cores=$CORES ram=${RAM}MiB disk=${DISK_SIZE}GiB storage=$STORAGE bridge=$BRIDGE user=$CI_USER"
-if [[ -t 0 ]]; then
+msg_info "Summary: VMID=$VMID name=$VM_NAME cores=$CORES ram=${RAM}MiB disk=${DISK_SIZE}GiB storage=$STORAGE bridge=$BRIDGE net=$IPCONFIG user=$CI_USER"
+if [[ -t 0 && $PRESET -eq 0 ]]; then
   read -rp "Proceed? [Y/n]: " CONFIRM
   if [[ ${CONFIRM,,} == n* ]]; then
     msg_warn "Aborted by user."
@@ -196,7 +334,7 @@ qm set "$VMID" --scsi0 "$STORAGE:0,import-from=$IMG_FILE,discard=on" >/dev/null
 qm set "$VMID" --ide2 "$STORAGE:cloudinit" >/dev/null
 qm set "$VMID" --boot order=scsi0 >/dev/null
 qm disk resize "$VMID" scsi0 "${DISK_SIZE}G" >/dev/null
-qm set "$VMID" --ipconfig0 ip=dhcp >/dev/null
+qm set "$VMID" --ipconfig0 "$IPCONFIG" >/dev/null
 qm set "$VMID" --cicustom "user=$SNIP_STORAGE:snippets/$SNIPPET_NAME" >/dev/null
 msg_ok "VM $VMID created."
 
@@ -215,6 +353,7 @@ for _ in $(seq 1 120); do
 done
 
 VM_IP=""
+[[ ${IP_ADDR,,} != dhcp ]] && VM_IP=${IP_ADDR%/*}
 if [[ $AGENT_UP -eq 1 ]]; then
   msg_ok "Guest agent is up. Waiting for cloud-init to finish (Docker + DDEV install)..."
   for _ in $(seq 1 180); do
@@ -223,9 +362,11 @@ if [[ $AGENT_UP -eq 1 ]]; then
     fi
     sleep 10
   done
-  VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null |
-    grep -oP '"ip-address"\s*:\s*"\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
-    grep -v '^127\.' | head -n1 || true)
+  if [[ -z $VM_IP ]]; then
+    VM_IP=$(qm guest cmd "$VMID" network-get-interfaces 2>/dev/null |
+      grep -oP '"ip-address"\s*:\s*"\K[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' |
+      grep -v '^127\.' | head -n1 || true)
+  fi
 else
   msg_warn "Guest agent did not come up in time; the VM may still be provisioning."
 fi

@@ -21,8 +21,13 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
 
 ## What it does
 
-1. Asks for VM settings (ID, name, CPU, RAM, disk, storage, bridge, user).
-   Defaults are shown in brackets; press Enter to accept them.
+1. Asks for the installation type:
+   - **Default** (recommended): asks for the VM name (`ddev-xxx`, where you
+     replace `xxx` with your project name), the static IP (`10.42.0.2xx/24`
+     placeholder, or `dhcp`), the RAM (default 8 GiB) and the disk size
+     (default 20 GiB). Everything else uses the defaults from the table below.
+   - **Advanced**: additionally asks for VM ID, CPU, storage, bridge,
+     gateway, autostart, username and password.
 2. Downloads the Debian 13 `genericcloud` image to
    `/var/lib/vz/template/cache/` (reused on subsequent runs).
 3. Writes a cloud-init user-data snippet to the snippets storage
@@ -42,27 +47,53 @@ First boot takes a few minutes (full `apt upgrade` + Docker + DDEV install).
 
 ## Configuration
 
-Every prompt can be skipped by exporting the variable beforehand. With all
-variables set (or stdin not attached to a terminal), the script runs
-unattended using defaults for anything not provided.
+The most common settings can be passed as flags — note the `--` separating
+them from the `bash -c` command:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts/main/vm/ddev.sh)" \
+  -- --name ddev-myproject --ip 10.42.0.201/24
+```
+
+When both `--name` and `--ip` are given, nothing is asked at all — the VM is
+created straight away with the default settings.
+
+| Flag | Description |
+| --- | --- |
+| `--name <name>` | VM name/hostname |
+| `--ip <cidr\|dhcp>` | Static IP in CIDR notation, or `dhcp` |
+| `--gateway <ip>` | Gateway for static IP |
+| `--bridge <bridge>` | Network bridge |
+| `--vmid <id>` | Proxmox VM ID |
+| `--advanced` | Ask for every setting instead of using defaults |
+| `-h`, `--help` | Show help |
+
+Every setting (these and more) can also be provided as an environment
+variable, which skips its prompt. The name and IP prompts show placeholders
+(`ddev-xxx`, `10.42.0.2xx/24`) and insist until you replace them with real
+values. With stdin not attached to a terminal the script runs unattended
+using defaults.
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `VMID` | next free ID | Proxmox VM ID |
 | `VM_NAME` | `ddev` | VM name and hostname |
-| `CORES` | `4` | CPU cores |
-| `RAM` | `8192` | RAM in MiB |
-| `DISK_SIZE` | `60` | Disk size in GiB |
+| `CORES` | all host cores | CPU cores (KVM time-shares CPU, so this is safe) |
+| `RAM` | `8192` | RAM in MiB, capped to host RAM minus a reserve (10%, min 2 GiB) |
+| `DISK_SIZE` | `20` | Disk size in GiB |
 | `STORAGE` | first active image storage | Storage for the VM disk |
-| `BRIDGE` | `vmbr0` | Network bridge |
+| `BRIDGE` | `vmbr1` | Network bridge |
+| `IP_ADDR` | `dhcp` | Static IP in CIDR notation (e.g. `192.168.1.50/24`), or `dhcp` |
+| `GATEWAY` | `x.x.x.1` of `IP_ADDR` | Gateway (only asked when `IP_ADDR` is static) |
 | `ONBOOT` | `1` | Start the VM when the host boots |
 | `CI_USER` | `ddev` | Username inside the VM |
 | `CI_PASSWORD` | `ddev` | Password for that user (console/SSH) |
 
-Example (unattended):
+Example (unattended, static IP):
 
 ```bash
 VMID=200 VM_NAME=ddev-client1 DISK_SIZE=80 CI_PASSWORD='s3cret' \
+  IP_ADDR=192.168.1.50/24 GATEWAY=192.168.1.1 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts/main/vm/ddev.sh)"
 ```
 
