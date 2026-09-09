@@ -53,7 +53,7 @@ Usage: ddev.sh [options]
 The default installation only asks for the VM name and the IP; everything
 else uses defaults. Use --advanced to review every setting. Environment
 variables work too: VMID, VM_NAME, CORES, RAM, BALLOON, DISK_SIZE, STORAGE,
-BRIDGE, IP_ADDR, GATEWAY, ONBOOT, CI_USER, CI_PASSWORD, ADVANCED.
+BRIDGE, IP_ADDR, GATEWAY, ONBOOT, TIMEZONE, CI_USER, CI_PASSWORD, ADVANCED.
 
 When piping through bash -c, pass flags after '--':
   bash -c "$(curl -fsSL .../vm/ddev.sh)" -- --name ddev-myproject --ip 192.168.1.50/24
@@ -203,6 +203,7 @@ if [[ $ADVANCED -eq 1 ]]; then
   ask STORAGE "Storage for the VM disk" "$DEFAULT_STORAGE"
   ask BRIDGE "Network bridge" "vmbr1"
   ask ONBOOT "Start VM on host boot (0/1)" "1"
+  ask TIMEZONE "Timezone" "Europe/Madrid"
   ask CI_USER "VM username" "ddev"
   ask CI_PASSWORD "VM user password (console/SSH)" "ddev"
 else
@@ -212,6 +213,7 @@ else
   STORAGE=${STORAGE:-$DEFAULT_STORAGE}
   BRIDGE=${BRIDGE:-vmbr1}
   ONBOOT=${ONBOOT:-1}
+  TIMEZONE=${TIMEZONE:-Europe/Madrid}
   CI_USER=${CI_USER:-ddev}
   CI_PASSWORD=${CI_PASSWORD:-ddev}
 fi
@@ -279,6 +281,7 @@ cat >"$SNIPPET_FILE" <<EOF
 #cloud-config
 hostname: $VM_NAME
 manage_etc_hosts: true
+timezone: $TIMEZONE
 
 users:
   - name: $CI_USER
@@ -303,9 +306,40 @@ packages:
   - ca-certificates
   - curl
   - gnupg
+  - git
+  - htop
+  - vim
+  - zram-tools
+  - unattended-upgrades
+
+# write_files runs before package install, so Docker picks up daemon.json on
+# its very first start.
+write_files:
+  # Rotate container logs so they cannot fill the disk.
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+  # Enable automatic security updates (Debian's standard periodic config).
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+  # Compressed swap in RAM: absorbs memory pressure (e.g. when Proxmox
+  # ballooning reclaims memory) instead of OOM-killing containers.
+  - path: /etc/default/zramswap
+    content: |
+      ALGO=zstd
+      PERCENT=50
 
 runcmd:
   - systemctl enable --now qemu-guest-agent
+  - systemctl restart zramswap
   - install -m 0755 -d /etc/apt/keyrings
   # Docker (official repository)
   - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
@@ -344,6 +378,13 @@ qm set "$VMID" --boot order=scsi0 >/dev/null
 qm disk resize "$VMID" scsi0 "${DISK_SIZE}G" >/dev/null
 qm set "$VMID" --ipconfig0 "$IPCONFIG" >/dev/null
 qm set "$VMID" --cicustom "user=$SNIP_STORAGE:snippets/$SNIPPET_NAME" >/dev/null
+qm set "$VMID" --description "# $VM_NAME
+
+DDEV development VM (Debian 13 + Docker + DDEV)
+
+- **Network:** $IPCONFIG
+- **User:** $CI_USER
+- **Created:** $(date '+%Y-%m-%d') by [proxmox-scripts](https://github.com/trebormc/proxmox-scripts)" >/dev/null
 msg_ok "VM $VMID created."
 
 msg_info "Starting VM..."

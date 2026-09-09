@@ -37,11 +37,19 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
 5. Starts the VM. On first boot, cloud-init:
    - creates your user (sudo without password, member of `docker`),
    - installs your host's SSH public keys,
-   - upgrades packages and installs `qemu-guest-agent`,
+   - sets the timezone (`Europe/Madrid` by default),
+   - upgrades packages and installs `qemu-guest-agent`, `git`, `htop`, `vim`,
+   - enables compressed swap in RAM (zram, zstd, 50% of RAM) so memory
+     pressure degrades performance instead of OOM-killing containers,
+   - enables automatic security updates (`unattended-upgrades`),
    - installs Docker Engine and DDEV from their official APT repositories,
+   - configures Docker log rotation (`max-size: 10m`, `max-file: 3` per
+     container) so logs cannot fill the disk,
    - runs `ddev config global --router-bind-all-interfaces` so DDEV sites are
      reachable from other machines on your network (not just from inside the VM).
-6. Waits for provisioning to finish and prints the VM's IP address.
+6. Sets a Proxmox description on the VM (name, network, user, creation date)
+   so it is easy to identify in the web UI.
+7. Waits for provisioning to finish and prints the VM's IP address.
 
 First boot takes a few minutes (full `apt upgrade` + Docker + DDEV install).
 
@@ -87,6 +95,7 @@ using defaults.
 | `IP_ADDR` | `dhcp` | Static IP in CIDR notation (e.g. `192.168.1.50/24`), or `dhcp` |
 | `GATEWAY` | `x.x.x.1` of `IP_ADDR` | Gateway (only asked when `IP_ADDR` is static) |
 | `ONBOOT` | `1` | Start the VM when the host boots |
+| `TIMEZONE` | `Europe/Madrid` | Timezone inside the VM |
 | `CI_USER` | `ddev` | Username inside the VM |
 | `CI_PASSWORD` | `ddev` | Password for that user (console/SSH) |
 
