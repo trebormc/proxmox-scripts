@@ -1,0 +1,4 @@
+# Normalize line endings. Shell scripts MUST use LF: they are piped straight
+# into bash on the Proxmox host, and CRLF breaks them.
+* text=auto
+*.sh text eol=lf

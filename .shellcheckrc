@@ -1,0 +1,3 @@
+# ShellCheck configuration for all scripts in this repository.
+# Scripts target bash on Proxmox VE hosts.
+shell=bash
