@@ -337,10 +337,26 @@ write_files:
     content: |
       ALGO=zstd
       PERCENT=50
+  # Auto-login on the Proxmox console (noVNC on tty1, xterm.js on ttyS0),
+  # LXC-style. Only affects the local console — SSH still asks for auth.
+  - path: /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin $CI_USER --noclear %I \$TERM
+  - path: /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin $CI_USER --keep-baud 115200,57600,38400,9600 %I \$TERM
 
 runcmd:
   - systemctl enable --now qemu-guest-agent
   - systemctl restart zramswap
+  # Apply console autologin now — the gettys may have started before
+  # cloud-init wrote the override files.
+  - systemctl daemon-reload
+  - systemctl restart getty@tty1 serial-getty@ttyS0 || true
   - install -m 0755 -d /etc/apt/keyrings
   # Docker (official repository)
   - curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc

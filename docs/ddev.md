@@ -47,6 +47,9 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/trebormc/proxmox-scripts
    - installs Docker Engine and DDEV from their official APT repositories,
    - configures Docker log rotation (`max-size: 10m`, `max-file: 3` per
      container) so logs cannot fill the disk,
+   - enables auto-login on the Proxmox console (noVNC and xterm.js),
+     LXC-style — opening the console drops you into a shell as your user,
+     while SSH still requires key or password,
    - runs `ddev config global --router-bind-all-interfaces` so DDEV sites are
      reachable from other machines on your network (not just from inside the VM).
 6. Sets a Proxmox description on the VM (name, network, user, creation date)
